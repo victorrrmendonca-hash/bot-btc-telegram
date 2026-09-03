@@ -1,1 +1,6 @@
-worker: python bot.py
+bot-btc-telegram/
+├── .gitignore
+├── LICENSE
+├── Procfile       ← (agora com o nome certo)
+├── bot.py
+└── requirements.txt
