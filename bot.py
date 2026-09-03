@@ -1,10 +1,10 @@
-import requests
-import time
-from datetime import datetime
 import os
+import time
 import logging
+import requests
+from datetime import datetime
 
-# Configuração de logs (mostra tudo no console do Railway)
+# Configuração de logs
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -22,18 +22,25 @@ URL = f"https://api.telegram.org/bot{TOKEN}/"
 def calcular_rsi(precos, periodo=14):
     if len(precos) < periodo + 1:
         return 50
+    
+    # Pega apenas os últimos N+1 preços e calcula a diferença em ordem cronológica
+    precos_recentes = precos[-(periodo + 1):]
     ganhos = 0
     perdas = 0
-    for i in range(1, periodo + 1):
-        diferenca = precos[-i] - precos[-i-1]
-        if diferenca >= 0:
+    
+    for i in range(1, len(precos_recentes)):
+        diferenca = precos_recentes[i] - precos_recentes[i-1]
+        if diferenca > 0:
             ganhos += diferenca
         else:
             perdas += abs(diferenca)
+            
     ganhos_medio = ganhos / periodo
     perdas_medio = perdas / periodo
+    
     if perdas_medio == 0:
         return 100
+        
     rs = ganhos_medio / perdas_medio
     return 100 - (100 / (1 + rs))
 
@@ -45,6 +52,7 @@ def calcular_ma(precos, periodo):
 # ==================== BUSCAR DADOS ====================
 def buscar_dados():
     dados = {}
+    
     # 1) Preço, RSI, médias da Binance
     try:
         url_binance = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=200"
@@ -52,6 +60,7 @@ def buscar_dados():
         resp.raise_for_status()
         velas = resp.json()
         fechamentos = [float(v[4]) for v in velas]
+        
         preco_atual = fechamentos[-1]
         dados['preco'] = preco_atual
         dados['rsi'] = calcular_rsi(fechamentos)
@@ -60,20 +69,16 @@ def buscar_dados():
         dados['ma30'] = calcular_ma(fechamentos, 30)
         dados['ma50'] = calcular_ma(fechamentos, 50)
         dados['ma200'] = calcular_ma(fechamentos, 200)
+        
         preco_ontem = fechamentos[-2] if len(fechamentos) > 1 else preco_atual
         dados['variacao'] = ((preco_atual - preco_ontem) / preco_ontem) * 100
         logging.info("✅ Dados da Binance obtidos com sucesso.")
     except Exception as e:
         logging.error(f"❌ Erro na Binance: {e}")
-        # Fallback para não quebrar (valores fictícios)
-        dados['preco'] = 65000
-        dados['rsi'] = 50
-        dados['ma5'] = 64000
-        dados['ma10'] = 63500
-        dados['ma30'] = 62000
-        dados['ma50'] = 61000
-        dados['ma200'] = 58000
-        dados['variacao'] = 0
+        dados.update({
+            'preco': 65000, 'rsi': 50, 'ma5': 64000, 'ma10': 63500,
+            'ma30': 62000, 'ma50': 61000, 'ma200': 58000, 'variacao': 0
+        })
 
     # 2) Fear & Greed
     try:
@@ -153,7 +158,7 @@ def enviar_mensagem(chat_id, texto):
         payload = {
             "chat_id": chat_id,
             "text": texto,
-            "parse_mode": "Markdown"
+            "parse_mode": "HTML"
         }
         resp = requests.post(URL + "sendMessage", json=payload, timeout=10)
         resp.raise_for_status()
@@ -165,7 +170,7 @@ def enviar_mensagem(chat_id, texto):
 def processar_comando(chat_id, comando):
     if comando == "/start":
         msg = (
-            "🤖 *Bot Analista BTC ativo!*\n\n"
+            "🤖 <b>Bot Analista BTC ativo!</b>\n\n"
             "Envie /analisar para receber a análise agora.\n"
             "O bot também envia análises automáticas a cada 1 hora."
         )
@@ -178,7 +183,7 @@ def processar_analise(chat_id):
         analise = analisar(dados)
 
         msg = f"""
-📊 *ANÁLISE BITCOIN* - {datetime.now().strftime('%d/%m/%Y %H:%M')}
+📊 <b>ANÁLISE BITCOIN</b> - {datetime.now().strftime('%d/%m/%Y %H:%M')}
 
 💰 Preço: US$ {dados['preco']:,.2f}
 📈 Variação 24h: {dados['variacao']:.2f}%
@@ -186,13 +191,13 @@ def processar_analise(chat_id):
 😨 Fear & Greed: {dados['fng']}
 
 ---
-🎯 *SCORE TOTAL*: **{analise['score']:.2f}**
+🎯 <b>SCORE TOTAL</b>: <b>{analise['score']:.2f}</b>
 
-📌 *RECOMENDAÇÃO*:
+📌 <b>RECOMENDAÇÃO</b>:
 {analise['emoji']} {analise['rec']}
 
 ---
-_Análise automática via Railway_
+<i>Análise automática via Railway</i>
 """
         enviar_mensagem(chat_id, msg)
     except Exception as e:
@@ -204,12 +209,13 @@ def main():
     logging.info("🤖 Bot iniciado!")
     offset = 0
     chat_id = None
-    ultima_analise = 0
+    ultima_analise = time.time()  # Inicializa com o tempo atual para evitar envio imediato ao ligar
 
     while True:
         try:
-            url_get = URL + f"getUpdates?offset={offset}&timeout=30"
-            resp = requests.get(url_get, timeout=35)
+            url_get = URL + f"getUpdates?offset={offset}&timeout=10"
+            resp = requests.get(url_get, timeout=15)
+            
             if resp.status_code == 200:
                 dados = resp.json()
                 if dados.get('ok'):
@@ -219,7 +225,7 @@ def main():
                             msg = update['message']
                             chat_id = msg['chat']['id']
                             if 'text' in msg:
-                                texto = msg['text']
+                                texto = msg['text'].strip()
                                 if texto == '/start':
                                     processar_comando(chat_id, texto)
                                 elif texto == '/analisar':
@@ -234,7 +240,7 @@ def main():
         except Exception as e:
             logging.error(f"❌ Erro no loop principal: {e}")
 
-        time.sleep(30)  # espera 30 segundos antes de nova verificação
+        time.sleep(1)  # Intervalo reduzido para não travar a resposta aos comandos
 
 if __name__ == "__main__":
     main()
